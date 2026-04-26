@@ -20,9 +20,12 @@
         - [Simple PnPOnline Connect Command](#simple-pnponline-connect-command)
         - [Reset SharePoint Home Page back to Home.aspx of SitePages](#reset-sharepoint-home-page-back-to-homeaspx-of-sitepages)
         - [SharePoint change NewPosts back to Page](#sharepoint-change-newposts-back-to-page)
+        - [SharePoint - Grant Enterprise Application with Write access to ALL sites](#sharepoint---grant-enterprise-application-with-write-access-to-all-sites)
     - [M365 or EntraID Toolkits](#m365-or-entraid-toolkits)
+        - [M365 - Restrict Microsoft 365 Group and Teams creation](#m365---restrict-microsoft-365-group-and-teams-creation)
         - [Automation to ensure all tenant enabled GDAP Auto-Extend](#automation-to-ensure-all-tenant-enabled-gdap-auto-extend)
     - [Utilities & Supporting Toolkits](#utilities--supporting-toolkits)
+        - [SharePoint - PowerShell Modules required in this repo](#sharepoint---powershell-modules-required-in-this-repo)
         - [SharePoint - REST API to get Site Page ID](#sharepoint---rest-api-to-get-site-page-id)
         - [Invoke-MgGraphRequest command error](#invoke-mggraphrequest-command-error)
         - [Use -DisableNameChecking when import Microsoft.Online.Sharepoint.PowerShell](#use--disablenamechecking-when-import-microsoftonlinesharepointpowershell)
@@ -227,7 +230,295 @@ Write-Host "Done. $FileName should now show Publish/Republish instead of Post/Up
 
 <br>
 
+### SharePoint - Grant Enterprise Application with `Write` access to ALL sites
+
+This toolkit is useful when you are bulk managed all the SharePoint sites.
+
+```powershell
+# Connect as SharePoint Admin (interactive)
+$SiteUrl = "[SHAREPOINT_SITE-or-SHAREPOINT_ADMIN_SITE]"
+Connect-PnPOnline -Url $SiteUrl -ClientId [CLIENT_ID] -Tenant "[TENANT_DOMAIN]" -Interactive
+
+
+# Replace the -ClientId to your own client-id and display name
+$AppId       = "<YOUR-APP-CLIENT-ID>"
+$DisplayName = "Austin-Copilot+PnP"
+
+
+# Get all sites exclude OneDrive sites; include team/communication sites
+$sites = Get-PnPTenantSite -IncludeOneDriveSites:$false
+
+
+# Grant Write access to all sites with error handling
+foreach ($site in $sites) {
+    try {
+        Grant-PnPAzureADAppSitePermission `
+          -Site $site.Url `
+          -AppId $AppId `
+          -DisplayName $DisplayName `
+          -Permissions Write
+
+        Write-Host "Granted access to: $($site.Url)" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "Failed to grant access to: $($site.Url): $($_.Exception.Message)"
+    }
+}
+```
+
+<br>
+
 ## M365 or EntraID Toolkits
+
+<br>
+
+### M365 - Restrict Microsoft 365 Group (and Teams) creation
+
+Forced and disabled M365 user from creating M365 Group
+
+```powershell
+# To Check existing Group.Unified settings:
+# Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/groupSettings' |
+# >>   Select-Object -ExpandProperty value |
+# >>   Where-Object displayName -eq 'Group.Unified' |
+# >>   ForEach-Object { $_.values | Format-Table name, value -AutoSize }
+
+# OR #
+# USE #
+# get-Group.Unified-info-final-v1-30122025.ps1
+
+
+
+# [ROLLBACK] To restore default (everyone can create groups), run these GA REST calls:
+# Invoke-MgGraphRequest -Method PATCH -Uri 'https://graph.microsoft.com/v1.0/groupSettings/8da592cd-e14c-484c-8afd-3ab9bc06ec7c' -Body (@{ values = @(@{name='EnableGroupCreation'; value='true' }, @{name='GroupCreationAllowedGroupId'; value=''}) } | ConvertTo-Json -Depth 6)
+
+
+
+<#
+.SYNOPSIS
+  Restrict Microsoft 365 Group (and Teams) creation to a specific security group by configuring tenant-wide "Group.Unified" settings using GA REST (Invoke-MgGraphRequest).
+
+.DESCRIPTION
+  - Creates or updates the tenant-wide Microsoft 365 Group settings (Group.Unified) via /v1.0/groupSettings.
+  - Sets EnableGroupCreation=false (blocks everyone).
+  - Sets GroupCreationAllowedGroupId=<ObjectId of your "Allowed Group Creators" security group> (re-enables only those members).
+  - Optionally creates the security group and adds specified members.
+  - Verbose output and optional transcript. No progress bars.
+
+.REFERENCES
+  - Create tenant-wide settings (POST /groupSettings) and Group.Unified usage in v1.0: https://learn.microsoft.com/en-us/graph/api/group-post-settings?view=graph-rest-1.0
+  - Microsoft Entra group settings cmdlets (template ID example for Group.Unified = 62375ab9-6b52-47ed-826b-58e47e0e304b): https://learn.microsoft.com/en-us/entra/identity/users/groups-settings-cmdlets
+#>
+
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $false)]
+    [string] $AllowedGroupDisplayName = 'Queenstown IT - Allowed Group Creators',
+
+    [Parameter(Mandatory = $false)]
+    [switch] $AutoCreateAllowedGroupIfMissing = $true,
+
+    [Parameter(Mandatory = $false)]
+    [string[]] $AddMembersUpn = @(),  # e.g. 'admin@contoso.com','alice@contoso.com'
+
+    [Parameter(Mandatory = $false)]
+    [switch] $EnableTranscript,
+
+    [Parameter(Mandatory = $false)]
+    [string] $TranscriptPath = ".\GroupUnified_Transcript.log"
+)
+
+# GA template ID from Microsoft docs for Group.Unified
+$GroupUnifiedTemplateId = '62375ab9-6b52-47ed-826b-58e47e0e304b' # [2](https://learn.microsoft.com/en-us/answers/questions/1186794/what-is-the-limtation-on-creating-number-of-aad-gr)
+
+function Ensure-GraphAuth {
+    Write-Verbose "[Ensure-GraphAuth] Installing/Importing Microsoft.Graph..."
+    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
+        Install-Module Microsoft.Graph -Scope CurrentUser -Force
+    }
+    Import-Module Microsoft.Graph -ErrorAction Stop
+
+    # Request all scopes we might need (least privileged that cover this op)
+    # v1.0 tenant-wide group settings creation/update requires GroupSettings.ReadWrite.All + Directory.ReadWrite.All
+    $scopes = @('Directory.ReadWrite.All','Group.Read.All','Group.ReadWrite.All','GroupSettings.ReadWrite.All')
+    Write-Verbose "[Ensure-GraphAuth] Connecting with scopes: $($scopes -join ', ')"
+    Connect-MgGraph -Scopes $scopes -NoWelcome
+
+    $ctx = Get-MgContext
+    $org = Get-MgOrganization | Select-Object -First 1
+    Write-Host ("[INFO] Connected. Tenant: {0}  Account: {1}" -f $org.Id, $ctx.Account) -ForegroundColor Green
+}
+
+function Get-OrCreate-AllowedSecurityGroup {
+    param([string] $DisplayName, [switch] $AutoCreate)
+
+    Write-Verbose "[Get-OrCreate-AllowedSecurityGroup] Searching for '$DisplayName'..."
+    $group = Get-MgGroup -Filter "displayName eq '$DisplayName'" -ConsistencyLevel eventual -All | Where-Object {
+        $_.SecurityEnabled -eq $true -and $_.MailEnabled -eq $false
+    }
+
+    if ($group) {
+        Write-Host "[INFO] Found security group: $($group.DisplayName) [$($group.Id)]" -ForegroundColor Green
+        return $group
+    }
+
+    if ($AutoCreate) {
+        Write-Host "[INFO] Creating security group '$DisplayName'..." -ForegroundColor Yellow
+        $mailNickname = ($DisplayName -replace '[^A-Za-z0-9]', '').ToLower()
+        if ([string]::IsNullOrWhiteSpace($mailNickname)) { $mailNickname = "allowedgroupcreators" }
+
+        $new = New-MgGroup `
+            -DisplayName $DisplayName `
+            -MailEnabled:$false `
+            -SecurityEnabled:$true `
+            -MailNickname $mailNickname
+
+        Write-Host "[INFO] Created security group: $($new.DisplayName) [$($new.Id)]" -ForegroundColor Green
+        return $new
+    }
+
+    throw "Security group '$DisplayName' not found and AutoCreateAllowedGroupIfMissing is disabled."
+}
+
+function Add-Members-ToGroup {
+    param([string] $GroupId, [string[]] $UsersUpn)
+
+    if (-not $UsersUpn -or $UsersUpn.Count -eq 0) { Write-Verbose "[Add-Members-ToGroup] No members to add."; return }
+
+    Write-Host "[INFO] Adding members to group [$GroupId]..." -ForegroundColor Cyan
+    foreach ($upn in $UsersUpn) {
+        try {
+            Write-Verbose "[Add-Members-ToGroup] Resolving user: $upn"
+            $user = Get-MgUser -Filter "userPrincipalName eq '$upn'" -ConsistencyLevel eventual -All
+            if (-not $user) { Write-Host "[WARN] User not found: $upn" -ForegroundColor Yellow; continue }
+
+            Write-Verbose "[Add-Members-ToGroup] Checking membership for $upn..."
+            $existing = Get-MgGroupMember -GroupId $GroupId -All | Where-Object { $_.Id -eq $user.Id }
+            if ($existing) { Write-Host "[INFO] Already a member: $upn" -ForegroundColor DarkGreen; continue }
+
+            Write-Verbose "[Add-Members-ToGroup] Adding $upn by reference..."
+            $body = @{ "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$($user.Id)" }
+            Add-MgGroupMemberByRef -GroupId $GroupId -BodyParameter $body
+            Write-Host "[INFO] Added: $upn" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "[ERROR] Failed to add $upn : $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+}
+
+function Get-TenantGroupSettings {
+    # v1.0: GET /groupSettings (tenant-wide settings)  [4](https://learn.microsoft.com/en-us/graph/api/group-post-settings?view=graph-rest-1.0)
+    Write-Verbose "[Get-TenantGroupSettings] Listing existing tenant-wide group settings (v1.0)..."
+    $resp = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/groupSettings'
+    return $resp.value
+}
+
+function New-TenantGroupSettings {
+    param([string] $AllowedGroupId)
+
+    # v1.0: POST /groupSettings, using published Group.Unified template ID  [4](https://learn.microsoft.com/en-us/graph/api/group-post-settings?view=graph-rest-1.0)[2](https://learn.microsoft.com/en-us/answers/questions/1186794/what-is-the-limtation-on-creating-number-of-aad-gr)
+    Write-Verbose "[New-TenantGroupSettings] Creating Group.Unified settings..."
+    $payload = @{
+        templateId = $GroupUnifiedTemplateId
+        values     = @(
+            @{ name = 'EnableGroupCreation';          value = 'false' }
+            @{ name = 'GroupCreationAllowedGroupId'; value = $AllowedGroupId }
+        )
+    }
+    $created = Invoke-MgGraphRequest -Method POST -Uri 'https://graph.microsoft.com/v1.0/groupSettings' -Body ($payload | ConvertTo-Json -Depth 6)
+    Write-Host "[INFO] Created Group.Unified settings: $($created.id)" -ForegroundColor Green
+    return $created
+}
+
+function Update-TenantGroupSettings {
+    param([string] $SettingId, [string] $AllowedGroupId)
+
+    # v1.0: PATCH /groupSettings/{id}  [4](https://learn.microsoft.com/en-us/graph/api/group-post-settings?view=graph-rest-1.0)
+    Write-Verbose "[Update-TenantGroupSettings] Updating settings $SettingId..."
+    $payload = @{
+        values = @(
+            @{ name = 'EnableGroupCreation';          value = 'false' }
+            @{ name = 'GroupCreationAllowedGroupId'; value = $AllowedGroupId }
+        )
+    }
+    Invoke-MgGraphRequest -Method PATCH -Uri ("https://graph.microsoft.com/v1.0/groupSettings/{0}" -f $SettingId) -Body ($payload | ConvertTo-Json -Depth 6) | Out-Null
+    Write-Host "[INFO] Updated Group.Unified settings: $SettingId" -ForegroundColor Green
+}
+
+function Ensure-GroupUnifiedSetting {
+    param([string] $AllowedGroupId)
+
+    $settings = Get-TenantGroupSettings
+    $unified  = $settings | Where-Object { $_.displayName -eq 'Group.Unified' }
+
+    if (-not $unified) {
+        $created = New-TenantGroupSettings -AllowedGroupId $AllowedGroupId
+        return $created
+    }
+    else {
+        Update-TenantGroupSettings -SettingId $unified.id -AllowedGroupId $AllowedGroupId
+        # Re‑read for verification
+        $settings2 = Get-TenantGroupSettings
+        return ($settings2 | Where-Object { $_.id -eq $unified.id })
+    }
+}
+
+function Show-Verification {
+    param($SettingObject)
+
+    Write-Host "[INFO] Applied values:" -ForegroundColor Green
+    $SettingObject.values | Sort-Object name | Format-Table name, value -AutoSize
+}
+
+function Show-Rollback {
+    param([string] $SettingId)
+
+    Write-Host "`n[ROLLBACK] To restore default (everyone can create groups), run these GA REST calls:" -ForegroundColor Yellow
+    Write-Host "Invoke-MgGraphRequest -Method PATCH -Uri 'https://graph.microsoft.com/v1.0/groupSettings/$SettingId' -Body (@{ values = @(@{name='EnableGroupCreation'; value='true' }, @{name='GroupCreationAllowedGroupId'; value=''}) } | ConvertTo-Json -Depth 6)" -ForegroundColor White
+}
+
+# ----------------------------- Main -----------------------------
+$transcriptStarted = $false
+try {
+    if ($EnableTranscript) {
+        $dir = Split-Path -Path $TranscriptPath -Parent
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        Start-Transcript -Path $TranscriptPath -Append -ErrorAction Stop
+        $transcriptStarted = $true
+        Write-Host "[INFO] Transcript started: $TranscriptPath" -ForegroundColor Cyan
+    }
+
+    Ensure-GraphAuth
+
+    # 1) Resolve/create the allowed creators security group
+    $allowedGroup = Get-OrCreate-AllowedSecurityGroup -DisplayName $AllowedGroupDisplayName -AutoCreate:$AutoCreateAllowedGroupIfMissing
+    Write-Host "[INFO] Allowed creators group ObjectId: $($allowedGroup.Id)" -ForegroundColor Green
+
+    # 2) Optionally add members
+    if ($AddMembersUpn.Count -gt 0) {
+        Add-Members-ToGroup -GroupId $allowedGroup.Id -UsersUpn $AddMembersUpn
+    }
+
+    # 3) Configure Group.Unified tenant-wide settings
+    $unifiedSetting = Ensure-GroupUnifiedSetting -AllowedGroupId $allowedGroup.Id
+    Show-Verification -SettingObject $unifiedSetting
+    Show-Rollback -SettingId $unifiedSetting.id
+
+    Write-Host "`n[INFO] Configuration complete." -ForegroundColor Green
+    Write-Host "[NOTE] Allow up to ~24–36 hours for Teams/Outlook/Planner to fully reflect the restriction in client UIs." -ForegroundColor Yellow
+}
+catch {
+    Write-Host "[ERROR] $($_.Exception.Message)" -    Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+    throw
+}
+finally {
+    if ($transcriptStarted) {
+        Stop-Transcript | Out-Null
+        Write-Host "[INFO] Transcript stopped." -ForegroundColor Cyan
+    }
+}
+```
 
 <br>
 
@@ -478,12 +769,26 @@ Disconnect-MgGraph | Out-Null
 Write-Host "`nCompleted." -ForegroundColor Green
 ```
 
-
-
-
 <br>
 
 ## Utilities & Supporting Toolkits
+
+<br>
+
+### SharePoint - PowerShell Modules required in this repo
+
+```powershell
+Install-Module ExchangeOnlineManagement
+Install-Module AzureAD
+Install-Module MSOnline
+Install-Module Microsoft.Online.SharePoint.PowerShell
+Install-Module ImportExcel
+Install-Module MSOnline
+Install-Module Microsoft.Graph
+Install-Module Microsoft.Graph.Beta 
+Install-Module PnP.PowerShell
+Install-Module ImportExcel
+```
 
 <br>
 
