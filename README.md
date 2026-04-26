@@ -22,7 +22,11 @@
         - [SharePoint change NewPosts back to Page](#sharepoint-change-newposts-back-to-page)
         - [SharePoint - Grant Enterprise Application with Write access to ALL sites](#sharepoint---grant-enterprise-application-with-write-access-to-all-sites)
     - [M365 or EntraID Toolkits](#m365-or-entraid-toolkits)
-        - [M365 - Restrict Microsoft 365 Group and Teams creation](#m365---restrict-microsoft-365-group-and-teams-creation)
+        - [M365 - Retrieve Group.Unified information](#m365---retrieve-groupunified-information)
+            - [Method 1 - Using Microsoft.Graph to retrieve Group.Unified information](#method-1---using-microsoftgraph-to-retrieve-groupunified-information)
+            - [Method 2 - Using Invoke-MgGraphRequest to retrieve Group.Unified information](#method-2---using-invoke-mggraphrequest-to-retrieve-groupunified-information)
+        - [M365 - To enable Microsoft 365 Group and Teams creation for M365 User](#m365---to-enable-microsoft-365-group-and-teams-creation-for-m365-user)
+        - [M365 - Restrict Microsoft 365 Group and Teams creation - Forced and disabled M365 user from creating M365 Group](#m365---restrict-microsoft-365-group-and-teams-creation---forced-and-disabled-m365-user-from-creating-m365-group)
         - [Automation to ensure all tenant enabled GDAP Auto-Extend](#automation-to-ensure-all-tenant-enabled-gdap-auto-extend)
     - [Utilities & Supporting Toolkits](#utilities--supporting-toolkits)
         - [SharePoint - PowerShell Modules required in this repo](#sharepoint---powershell-modules-required-in-this-repo)
@@ -272,9 +276,89 @@ foreach ($site in $sites) {
 
 <br>
 
-### M365 - Restrict Microsoft 365 Group (and Teams) creation
+### M365 - Retrieve `Group.Unified` information
 
-Forced and disabled M365 user from creating M365 Group
+<br>
+
+#### Method 1 - Using `Microsoft.Graph` to retrieve `Group.Unified` information
+
+```powershell
+# Requires -Module Microsoft.Graph.Groups
+Connect-MgGraph -Scopes "User.Read.All,Directory.ReadWrite.All","Group.Read.All","GroupSettings.Read.All"  -NoWelcome 
+
+# Fetch and display the 'Group.Unified' directory setting template
+Get-MgBetaDirectorySettingTemplate | Where-Object DisplayName -eq 'Group.Unified'
+```
+
+Sample output as below:
+
+```powershell
+DeletedDateTime Id                                   Description
+--------------- --                                   -----------
+                62375ab9-6b52-47ed-826b-58e47e0e304b …
+```
+
+<br>
+
+#### Method 2 - Using `Invoke-MgGraphRequest` to retrieve `Group.Unified` information
+
+```powershell
+# Fetch and display all settings for 'Group.Unified'
+Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/groupSettings' |`
+  Select-Object -ExpandProperty value |`
+  Where-Object displayName -eq 'Group.Unified' |`
+  ForEach-Object { $_.values | Format-Table name, value -AutoSize }
+```
+
+Sample output as below:
+
+```powershell
+Name  Value
+----  -----
+value true
+name  NewUnifiedGroupWritebackDefault
+value false
+name  EnableMIPLabels
+value
+name  CustomBlockedWordsList
+value false
+name  EnableMSStandardBlockedWords
+value
+name  ClassificationDescriptions
+value
+name  DefaultClassification
+value
+name  PrefixSuffixNamingRequirement
+value false
+name  AllowGuestsToBeGroupOwner
+value true
+name  AllowGuestsToAccessGroups
+value
+name  GuestUsageGuidelinesUrl
+value 81036dcd-c8d9-4ac5-b017-4f3426c0859c
+name  GroupCreationAllowedGroupId
+value true
+name  AllowToAddGuests
+value
+name  UsageGuidelinesUrl
+value
+name  ClassificationList
+value false
+name  EnableGroupCreation 
+```
+
+<br>
+
+### M365 - To enable Microsoft 365 Group (and Teams) creation for M365 User
+
+```powershell
+# [ROLLBACK] To restore default (everyone can create groups), run these GA REST calls:
+Invoke-MgGraphRequest -Method PATCH -Uri 'https://graph.microsoft.com/v1.0/groupSettings/8da592cd-e14c-484c-8afd-3ab9bc06ec7c' -Body (@{ values = @(@{name='EnableGroupCreation'; value='true' }, @{name='GroupCreationAllowedGroupId'; value=''}) } | ConvertTo-Json -Depth 6)
+```
+
+<br>
+
+### M365 - Restrict Microsoft 365 Group (and Teams) creation - Forced and disabled M365 user from creating M365 Group
 
 ```powershell
 # To Check existing Group.Unified settings:
@@ -826,7 +910,7 @@ To temporary resolve it at the time being, you can start the PowerShell session 
 pwsh -NoProfile
 ```
 
-To permanent fix it, you either find out which version is conflicted or remove all and install the correct and specific version of `Microsoft.Graph`.
+To permanent fix it, you either find out which version is conflicted **OR** remove all and install the correct and specific version of `Microsoft.Graph`.
 
 <br>
 
