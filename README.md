@@ -121,8 +121,6 @@ The scripts are built from hands-on operational use cases, not theoretical examp
 
 ## SharePoint Toolkits
 
-<br>
-
 ### Simple PnPOnline Connect Command
 
 Based on my experience, the most effective approach for connecting to SharePoint Online is to use `Connect-PnPOnline` with explicitly defined tenant and Client ID values to ensure consistent and secure authentication.
@@ -270,15 +268,11 @@ foreach ($site in $sites) {
 }
 ```
 
-<br>
+<br><br>
 
 ## M365 or EntraID Toolkits
 
-<br>
-
 ### M365 - Retrieve `Group.Unified` information
-
-<br>
 
 #### Method 1 - Using `Microsoft.Graph` to retrieve `Group.Unified` information
 
@@ -853,11 +847,9 @@ Disconnect-MgGraph | Out-Null
 Write-Host "`nCompleted." -ForegroundColor Green
 ```
 
-<br>
+<br><br>
 
 ## Utilities & Supporting Toolkits
-
-<br>
 
 ### SharePoint - PowerShell Modules required in this repo
 
