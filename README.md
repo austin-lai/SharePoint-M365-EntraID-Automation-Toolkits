@@ -6,6 +6,16 @@
 > -----------| Updated on April 26th, 2026
 ```
 
+<!-- 
+TODO:
+
+- Check all command and script
+- Check all module require inside the script
+- Check the functionality
+- Check if possible to refine it
+- Check description or can have better one
+ -->
+
 ---
 
 ## Table of Contents
@@ -235,6 +245,8 @@ Write-Host "Done. $FileName should now show Publish/Republish instead of Post/Up
 <br>
 
 ### SharePoint - Clear SitePageFlags
+
+This toolkit is useful when you dealing with messy SharePoint page's flag or you wish to clean up the SharePoint page's flag.
 
 ```powershell
 param(
