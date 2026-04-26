@@ -30,6 +30,7 @@ TODO:
         - [Simple PnPOnline Connect Command](#simple-pnponline-connect-command)
         - [Reset SharePoint Home Page back to Home.aspx of SitePages](#reset-sharepoint-home-page-back-to-homeaspx-of-sitepages)
         - [SharePoint change NewPosts back to Page](#sharepoint-change-newposts-back-to-page)
+        - [SharePoint - Set a user to be SiteAdmin](#sharepoint---set-a-user-to-be-siteadmin)
         - [SharePoint - Clear SitePageFlags](#sharepoint---clear-sitepageflags)
         - [SharePoint - Grant Enterprise Application with Write access to ALL sites](#sharepoint---grant-enterprise-application-with-write-access-to-all-sites)
     - [M365 or EntraID Toolkits](#m365-or-entraid-toolkits)
@@ -240,6 +241,29 @@ Set-PnPListItem -List "Site Pages" -Identity $item.Id -Values @{ "PromotedState"
 
 
 Write-Host "Done. $FileName should now show Publish/Republish instead of Post/Update news."
+```
+
+<br>
+
+### SharePoint - Set a user to be SiteAdmin
+
+```powershell
+# Sign in once to the tenant admin center (interactive)
+$SiteUrl = "[SHAREPOINT_ADMIN_SITE]"
+$adminConn = Connect-PnPOnline -Url $SiteUrl -ClientId [CLIENT_ID] -Tenant "[TENANT_DOMAIN]" -Interactive -ReturnConnection
+
+# Get all sites under the main host
+$sites = Get-PnPTenantSite -Connection $adminConn -Detailed |
+         Where-Object { $_.Url -like "https://[TENANT_NAME].sharepoint.com/*" }
+
+# Add yourself as Site Collection Admin on every site
+foreach ($s in $sites) {
+    Write-Host "Granting SCA on $($s.Url) ..." -ForegroundColor Cyan
+    Set-PnPTenantSite -Identity $s.Url `
+        -Owners "[USER_NAME_IN_EMAIL]" `
+        -Connection $adminConn
+    
+}
 ```
 
 <br>
