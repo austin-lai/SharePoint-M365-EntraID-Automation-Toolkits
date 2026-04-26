@@ -20,12 +20,14 @@
         - [Simple PnPOnline Connect Command](#simple-pnponline-connect-command)
         - [Reset SharePoint Home Page back to Home.aspx of SitePages](#reset-sharepoint-home-page-back-to-homeaspx-of-sitepages)
         - [SharePoint change NewPosts back to Page](#sharepoint-change-newposts-back-to-page)
+        - [SharePoint - Clear SitePageFlags](#sharepoint---clear-sitepageflags)
         - [SharePoint - Grant Enterprise Application with Write access to ALL sites](#sharepoint---grant-enterprise-application-with-write-access-to-all-sites)
     - [M365 or EntraID Toolkits](#m365-or-entraid-toolkits)
         - [M365 - Retrieve Group.Unified information](#m365---retrieve-groupunified-information)
             - [Method 1 - Using Microsoft.Graph to retrieve Group.Unified information](#method-1---using-microsoftgraph-to-retrieve-groupunified-information)
             - [Method 2 - Using Invoke-MgGraphRequest to retrieve Group.Unified information](#method-2---using-invoke-mggraphrequest-to-retrieve-groupunified-information)
-        - [M365 - To enable Microsoft 365 Group and Teams creation for M365 User](#m365---to-enable-microsoft-365-group-and-teams-creation-for-m365-user)
+        - [M365 - To enable Microsoft 365 Group and Teams creation for M365 User - Simple functionalities](#m365---to-enable-microsoft-365-group-and-teams-creation-for-m365-user---simple-functionalities)
+        - [M365 - To enable Microsoft 365 Group and Teams creation for M365 User - Complex functionalities](#m365---to-enable-microsoft-365-group-and-teams-creation-for-m365-user---complex-functionalities)
         - [M365 - Restrict Microsoft 365 Group and Teams creation - Forced and disabled M365 user from creating M365 Group](#m365---restrict-microsoft-365-group-and-teams-creation---forced-and-disabled-m365-user-from-creating-m365-group)
         - [Automation to ensure all tenant enabled GDAP Auto-Extend](#automation-to-ensure-all-tenant-enabled-gdap-auto-extend)
     - [Utilities & Supporting Toolkits](#utilities--supporting-toolkits)
@@ -232,6 +234,120 @@ Write-Host "Done. $FileName should now show Publish/Republish instead of Post/Up
 
 <br>
 
+### SharePoint - Clear SitePageFlags
+
+```powershell
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$SiteUrl,
+
+    [string]$LibraryTitle = "Site Pages",
+    [string]$ColumnInternalName = "_SPSitePageFlags",
+
+    [switch]$OnlyWhenHasValue,
+    [switch]$WhatIf,
+
+    [string]$BackupCsvPath = "$(Join-Path $PWD ('SitePageFlags_Backup_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.csv'))"
+)
+
+Write-Host "Connecting to $SiteUrl ..." -ForegroundColor Cyan
+# $SiteUrl = "[SHAREPOINT_SITE-or-SHAREPOINT_ADMIN_SITE]"
+Connect-PnPOnline -Url $SiteUrl -ClientId [CLIENT_ID] -Tenant "[TENANT_DOMAIN]" -Interactive
+
+$list = Get-PnPList -Identity $LibraryTitle -ErrorAction Stop
+Write-Host "Found list: $($list.Title)" -ForegroundColor Green
+
+# Verify field
+$field = Get-PnPField -List $LibraryTitle | Where-Object { $_.InternalName -eq $ColumnInternalName }
+if (-not $field) {
+    Write-Host "ERROR: Field '$ColumnInternalName' not found in '$LibraryTitle'." -ForegroundColor Red
+    exit 1
+}
+Write-Host "Field: Title='$($field.Title)', InternalName='$($field.InternalName)', Type='$($field.TypeAsString)'" -ForegroundColor Green
+
+# Load items
+$items = Get-PnPListItem -List $LibraryTitle -PageSize 2000 -Fields "FileLeafRef","ID",$ColumnInternalName
+$pages = $items | Where-Object { $_["FileLeafRef"] -and ($_[ "FileLeafRef" ].ToLower().EndsWith(".aspx")) }
+
+Write-Host ("Total items: {0}; .aspx pages: {1}" -f $items.Count, $pages.Count) -ForegroundColor Cyan
+
+# Build candidates
+$candidates = foreach ($p in $pages) {
+    $name = $p["FileLeafRef"]; $id = $p.Id; $val = $p[$ColumnInternalName]
+    $currentText = if ($null -ne $val -and ($val -is [System.Collections.IEnumerable]) -and -not ($val -is [string])) { ($val -join "; ") } else { [string]$val }
+    $hasValue = -not [string]::IsNullOrWhiteSpace($currentText)
+    if (-not $OnlyWhenHasValue -or $hasValue) {
+        [pscustomobject]@{ ID = $id; Name = $name; Flags = $currentText }
+    }
+}
+
+Write-Host ("Candidates to clear: {0}" -f $candidates.Count) -ForegroundColor Cyan
+if ($candidates.Count -eq 0) { Write-Host "Nothing to do." -ForegroundColor Green; exit 0 }
+
+# Backup
+Write-Host "Writing backup to: $BackupCsvPath" -ForegroundColor Cyan
+$candidates | Export-Csv -Path $BackupCsvPath -NoTypeInformation -Encoding UTF8
+
+# Detect supported update parameter
+$setCmd = Get-Command Set-PnPListItem
+$hasUpdateType = ($setCmd.Parameters.Keys -contains 'UpdateType')
+$hasSystemUpdate = ($setCmd.Parameters.Keys -contains 'SystemUpdate')
+
+Write-Host ("Set-PnPListItem supports -UpdateType: {0}; -SystemUpdate: {1}" -f $hasUpdateType, $hasSystemUpdate) -ForegroundColor Cyan
+
+# Clear flags
+$errors = @(); $updated = @()
+
+foreach ($row in $candidates) {
+    $id = $row.ID; $name = $row.Name; $old = $row.Flags
+    Write-Host ("{0} -> clearing flags: '{1}'" -f $name, $old) -ForegroundColor Yellow
+
+    try {
+        if ($WhatIf) {
+            Write-Host ("WHATIF: Would clear '{0}' on item ID {1}" -f $ColumnInternalName, $id) -ForegroundColor DarkYellow
+            continue
+        }
+
+        $values = @{ $ColumnInternalName = @() }   # MultiChoice: clear with empty array
+        if ($hasUpdateType) {
+            Set-PnPListItem -List $LibraryTitle -Identity $id -Values $values -UpdateType SystemUpdate
+        }
+        elseif ($hasSystemUpdate) {
+            Set-PnPListItem -List $LibraryTitle -Identity $id -Values $values -SystemUpdate
+        }
+        else {
+            # Fallback: normal update (will bump version/modified)
+            Set-PnPListItem -List $LibraryTitle -Identity $id -Values $values
+        }
+
+        $updated += $row
+    }
+    catch {
+        # Try a secondary attempt with $null for stubborn MultiChoice fields
+        try {
+            Set-PnPListItem -List $LibraryTitle -Identity $id -Values @{ $ColumnInternalName = $null }
+            $updated += $row
+            Write-Host ("{0} -> cleared via fallback ($null)" -f $name) -ForegroundColor Green
+        }
+        catch {
+            $errors += [pscustomobject]@{ ID = $id; Name = $name; Error = $_.Exception.Message }
+            Write-Host ("ERROR on {0}: {1}" -f $name, $_.Exception.Message) -ForegroundColor Red
+        }
+    }
+}
+
+Write-Host ("Updated items: {0}" -f $updated.Count) -ForegroundColor Green
+if ($errors.Count -gt 0) {
+    $errPath = "$(Join-Path $PWD ('SitePageFlags_Errors_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.csv'))"
+    $errors | Export-Csv -Path $errPath -NoTypeInformation -Encoding UTF8
+    Write-Host ("Errors: {0} | Log: {1}" -f $errors.Count, $errPath) -ForegroundColor Red
+}
+
+Write-Host "Done." -ForegroundColor Green
+```
+
+<br>
+
 ### SharePoint - Grant Enterprise Application with `Write` access to ALL sites
 
 This toolkit is useful when you are bulk managed all the SharePoint sites.
@@ -343,7 +459,60 @@ name  EnableGroupCreation
 
 <br>
 
-### M365 - To enable Microsoft 365 Group (and Teams) creation for M365 User
+### M365 - To enable Microsoft 365 Group (and Teams) creation for M365 User - Simple functionalities
+
+```powershell
+Import-Module Microsoft.Graph.Beta.Identity.DirectoryManagement
+Import-Module Microsoft.Graph.Beta.Groups
+
+Connect-MgGraph -Scopes "Directory.ReadWrite.All", "Group.Read.All"
+
+$GroupName = ""
+$AllowGroupCreation = "False"
+
+$settingsObjectID = (Get-MgBetaDirectorySetting | Where-object -Property Displayname -Value "Group.Unified" -EQ).id
+
+if(!$settingsObjectID)
+{
+    $params = @{
+      templateId = "62375ab9-6b52-47ed-826b-58e47e0e304b"
+      values = @(
+            @{
+                   name = "EnableMSStandardBlockedWords"
+                   value = $true
+             }
+              )
+         }
+    
+    New-MgBetaDirectorySetting -BodyParameter $params
+    
+    $settingsObjectID = (Get-MgBetaDirectorySetting | Where-object -Property Displayname -Value "Group.Unified" -EQ).Id
+}
+
+$groupId = (Get-MgBetaGroup -all | Where-object {$_.displayname -eq $GroupName}).Id
+
+$params = @{
+    templateId = "62375ab9-6b52-47ed-826b-58e47e0e304b"
+    values = @(
+        @{
+            name = "EnableGroupCreation"
+            value = $AllowGroupCreation
+        }
+        @{
+            name = "GroupCreationAllowedGroupId"
+            value = $groupId
+        }
+    )
+}
+
+Update-MgBetaDirectorySetting -DirectorySettingId $settingsObjectID -BodyParameter $params
+
+(Get-MgBetaDirectorySetting -DirectorySettingId $settingsObjectID).Values
+```
+
+<br>
+
+### M365 - To enable Microsoft 365 Group (and Teams) creation for M365 User - Complex functionalities
 
 ```powershell
 # [ROLLBACK] To restore default (everyone can create groups), run these GA REST calls:
